@@ -64,6 +64,9 @@ function historyApiPlugin(): Plugin {
 }
 
 export default defineConfig({
+  // 关键：GitHub Pages 子路径
+  // 仓库名是 LShapeDesk，所以 base 必须设为 /LShapeDesk/
+  base: '/LShapeDesk/',
   server: {
     port: 3000,
     host: '0.0.0.0',
