@@ -5,7 +5,7 @@ import {
   Settings2, ZoomIn, ZoomOut, Maximize, 
   Calculator, Circle, Square, Trash2,
   CornerDownRight, Menu, X, History,
-  Clock, ArrowRight, Save
+  Clock, ArrowRight, Save, Upload
 } from 'lucide-react';
 import BlueprintCanvas from './components/BlueprintCanvas';
 import { DEFAULT_SPECS } from './constants';
@@ -38,17 +38,31 @@ const App: React.FC = () => {
   const dragStart = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load history from localStorage on mount
   useEffect(() => {
-    const savedHistory = localStorage.getItem('blueprint_history');
-    if (savedHistory) {
+    const load = async () => {
       try {
-        setHistory(JSON.parse(savedHistory));
+        const res = await fetch('/api/history');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setHistory(data);
+        }
       } catch (e) {
-        console.error("Failed to parse history", e);
+        console.error('Failed to load history from file, fallback to localStorage', e);
+        const savedHistory = localStorage.getItem('blueprint_history');
+        if (savedHistory) {
+          try {
+            setHistory(JSON.parse(savedHistory));
+          } catch (err) {
+            console.error('Failed to parse history from localStorage', err);
+          }
+        }
       }
-    }
+    };
+    load();
   }, []);
 
   useEffect(() => {
@@ -125,6 +139,16 @@ const App: React.FC = () => {
     }));
   };
 
+  const persistHistory = (entries: HistoryEntry[]) => {
+    fetch('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entries),
+    }).catch((err) => {
+      console.error('Failed to persist history to file', err);
+    });
+  };
+
   const addToHistory = () => {
     const newEntry: HistoryEntry = {
       id: Math.random().toString(36).substr(2, 9),
@@ -134,6 +158,7 @@ const App: React.FC = () => {
     const updatedHistory = [newEntry, ...history].slice(0, 50);
     setHistory(updatedHistory);
     localStorage.setItem('blueprint_history', JSON.stringify(updatedHistory));
+    persistHistory(updatedHistory);
   };
 
   const applyHistory = (entry: HistoryEntry) => {
@@ -143,8 +168,63 @@ const App: React.FC = () => {
   };
 
   const clearHistory = () => {
-    setHistory([]);
+    const empty: HistoryEntry[] = [];
+    setHistory(empty);
     localStorage.removeItem('blueprint_history');
+    persistHistory(empty);
+  };
+
+  // 导出当前参数为可还原的本地 JSON 记录
+  const exportCurrentConfig = () => {
+    const payload = {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      specs,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    link.href = url;
+    link.download = `deskmat_config_${ts}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // 从本地 JSON 文件还原参数
+  const handleImportConfigClick = () => {
+    importInputRef.current?.click();
+  };
+
+  const handleImportConfigChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = reader.result as string;
+        const data = JSON.parse(text);
+        const loadedSpecs = (data && data.specs) ? data.specs : data;
+        if (!loadedSpecs || typeof loadedSpecs !== 'object') {
+          throw new Error('Invalid config format');
+        }
+        setSpecs(prev => ({
+          ...prev,
+          ...loadedSpecs,
+          holes: loadedSpecs.holes || [],
+        }));
+        setSidebarTab('params');
+      } catch (err) {
+        console.error('Failed to import config', err);
+      } finally {
+        e.target.value = '';
+      }
+    };
+    reader.readAsText(file, 'utf-8');
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -421,7 +501,7 @@ const App: React.FC = () => {
             </>
           ) : (
             <section className="flex-1 flex flex-col min-h-0">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2 text-indigo-400">
                   <Clock className="w-4 h-4" />
                   <h2 className="text-[10px] font-black uppercase tracking-widest italic">Recent Exports</h2>
@@ -430,12 +510,37 @@ const App: React.FC = () => {
                   <button onClick={clearHistory} className="text-[9px] font-black text-slate-500 hover:text-red-400 uppercase">Clear All</button>
                 )}
               </div>
+
+              <div className="flex items-center gap-2 mb-4">
+                <button
+                  onClick={exportCurrentConfig}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 bg-slate-900 border border-slate-800 rounded-lg text-[9px] font-black uppercase tracking-widest text-slate-200 hover:border-indigo-500/60 hover:text-white transition-colors"
+                >
+                  <Save className="w-3 h-3" />
+                  Export JSON
+                </button>
+                <button
+                  onClick={handleImportConfigClick}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 bg-slate-900 border border-slate-800 rounded-lg text-[9px] font-black uppercase tracking-widest text-slate-200 hover:border-emerald-500/60 hover:text-white transition-colors"
+                >
+                  <Upload className="w-3 h-3" />
+                  Import JSON
+                </button>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={handleImportConfigChange}
+                />
+              </div>
+
               <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin scrollbar-thumb-slate-800">
                 {history.map((entry) => (
                   <button 
                     key={entry.id} 
                     onClick={() => applyHistory(entry)}
-                    className="w-full text-left p-3 bg-slate-900 border border-slate-800 rounded-xl hover:border-indigo-500/50 transition-all group"
+                    className="w-full text左 p-3 bg-slate-900 border border-slate-800 rounded-xl hover:border-indigo-500/50 transition-all group"
                   >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[9px] font-mono text-slate-500 italic">
@@ -446,7 +551,7 @@ const App: React.FC = () => {
                     <div className="grid grid-cols-2 gap-x-2 gap-y-1">
                       <div className="text-[10px] flex justify-between"><span className="text-slate-600">A:</span> <span className="text-slate-300">{entry.specs.A}</span></div>
                       <div className="text-[10px] flex justify-between"><span className="text-slate-600">B:</span> <span className="text-slate-300">{entry.specs.B}</span></div>
-                      <div className="text-[10px] flex justify-between"><span className="text-slate-600">R:</span> <span className="text-slate-300">{Math.round(entry.specs.R)}</span></div>
+                      <div className="text-[10px] flex justify之间"><span className="text-slate-600">R:</span> <span className="text-slate-300">{Math.round(entry.specs.R)}</span></div>
                       <div className="text-[10px] flex justify-between"><span className="text-slate-600">Cut:</span> <span className="text-slate-300">{entry.specs.holes.length}</span></div>
                     </div>
                   </button>
